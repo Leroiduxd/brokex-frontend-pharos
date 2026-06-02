@@ -71,12 +71,26 @@ button:focus-visible {
   width: 100vw;
 }
 
+html,
+body {
+  touch-action: manipulation;
+}
+
 input,
-textarea {
+textarea,
+select {
   -webkit-user-select: text;
   -moz-user-select: text;
   -ms-user-select: text;
   user-select: text;
+}
+
+@media screen and (max-width: 768px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
 }
 
 body {

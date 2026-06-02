@@ -1,4 +1,9 @@
 import React, { useState, useEffect } from 'react';
+import { useAccount, useWriteContract, useReadContract } from 'wagmi';
+import { coreAbi } from '../../abi/core';
+import { lensAbi } from '../../abi/lens';
+import { CONFIG } from '../../config';
+import { useNotifications } from '../../context/NotificationContext';
 import MobileTradeHeader from './MobileTradeHeader';
 import MobilePositions from './MobilePositions';
 import MobileOrderPanel from './MobileOrderPanel';
@@ -18,6 +23,121 @@ const sellColorBg = 'rgba(239, 68, 68, 0.1)';
 // ----------------------------------------------------
 export function MobileTopNav({ activeMarketInfo, setIsMarketSelectorOpen }) {
   const isPositive = activeMarketInfo.change.startsWith('+');
+  const [spreadLong, setSpreadLong] = useState(0);
+  const [spreadShort, setSpreadShort] = useState(0);
+
+  // Fetch real-time spreads from WebSocket
+  useEffect(() => {
+    let ws = null;
+    let reconnectTimeout = null;
+
+    const connectWS = () => {
+      const wsUrl = `${CONFIG.apiUrl.replace('https', 'wss').replace('http', 'ws')}/ws/spread`;
+      ws = new WebSocket(wsUrl);
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          const currentNetwork = CONFIG.network || 'testnet';
+          const networkSpreads = data[currentNetwork];
+          if (networkSpreads) {
+            setSpreadLong(parseFloat(networkSpreads.spreadLong) || 0);
+            setSpreadShort(parseFloat(networkSpreads.spreadShort) || 0);
+          }
+        } catch (err) {
+          console.error("MobileTopNav Spread WS parsing error:", err);
+        }
+      };
+
+      ws.onclose = () => {
+        reconnectTimeout = setTimeout(connectWS, 3000);
+      };
+
+      ws.onerror = (err) => {
+        console.error("MobileTopNav Spread WS error:", err);
+      };
+    };
+
+    connectWS();
+
+    return () => {
+      if (ws) ws.close();
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+    };
+  }, []);
+
+  // Fetch real-time asset snapshot from smart contract Lens
+  const { data: snapshot } = useReadContract({
+    address: CONFIG.addresses.lens,
+    abi: lensAbi,
+    functionName: 'getAssetSnapshot',
+    args: [5500n],
+    chainId: CONFIG.chainId,
+    query: {
+      refetchInterval: 10000, // Refetch every 10 seconds
+    }
+  });
+
+  const getSnapshotValue = (snap, key, index) => {
+    if (!snap) return 0;
+    let target = snap;
+    if (Array.isArray(snap) && snap.length === 1 && typeof snap[0] === 'object') {
+      target = snap[0];
+    }
+    if (target[key] !== undefined && target[key] !== null) {
+      return Number(target[key]);
+    }
+    if (target[index] !== undefined && target[index] !== null) {
+      return Number(target[index]);
+    }
+    return 0;
+  };
+
+  const getSnapshotConfigValue = (snap, key) => {
+    if (!snap) return null;
+    let target = snap;
+    if (Array.isArray(snap) && snap.length === 1 && typeof snap[0] === 'object') {
+      target = snap[0];
+    }
+    const snapConfig = target.config || target[4];
+    if (snapConfig && snapConfig[key] !== undefined && snapConfig[key] !== null) {
+      return snapConfig[key];
+    }
+    return null;
+  };
+
+  const oiLongRaw = getSnapshotValue(snapshot, 'openInterestLong', 1);
+  const oiShortRaw = getSnapshotValue(snapshot, 'openInterestShort', 2);
+  const borrowRateHourlyRaw = getSnapshotConfigValue(snapshot, 'borrowRateHourly');
+
+  const oiLongUSD = oiLongRaw / 1e6;
+  const oiShortUSD = oiShortRaw / 1e6;
+  const totalOi = oiLongUSD + oiShortUSD;
+
+  const formattedBorrowRate = borrowRateHourlyRaw !== null 
+    ? `${(Number(borrowRateHourlyRaw) / 100).toFixed(4)}%/h`
+    : '0.0000%/h';
+
+  const formatOIVal = (val) => {
+    if (!val || val === 0) return '0';
+    if (val >= 1e6) {
+      const formatted = val / 1e6;
+      return formatted % 1 === 0 ? `${formatted}M` : `${formatted.toFixed(1)}M`;
+    }
+    if (val >= 1e3) {
+      return `${Math.round(val / 1e3)}K`;
+    }
+    return Math.round(val).toString();
+  };
+
+  const longRatio = totalOi > 0 ? Math.round((oiLongUSD / totalOi) * 100) : 50;
+
+  // Compute live spread value
+  const basePriceNum = parseFloat(activeMarketInfo.price.replace(/,/g, '')) || 2315.10;
+  const longPriceNum = basePriceNum * (1 + spreadLong / 1000000);
+  const shortPriceNum = basePriceNum * (1 - spreadShort / 1000000);
+  const spreadUSD = Math.max(0, longPriceNum - shortPriceNum);
+  const formattedSpread = `$${spreadUSD.toFixed(4)}`;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -43,19 +163,19 @@ export function MobileTopNav({ activeMarketInfo, setIsMarketSelectorOpen }) {
           .mobile-metrics-scroll > * { flex-shrink: 0; }
         `}</style>
 
-        {/* Funding Long */}
+        {/* Borrow Fee */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-          <span style={{ fontSize: '8px', color: 'var(--text-grey)', textTransform: 'uppercase' }}>Funding Long</span>
-          <span style={{ fontSize: '10.5px', fontFamily: 'Source Code Pro, monospace', fontWeight: 'bold', color: '#ef4444' }}>
-            0.0100%
+          <span style={{ fontSize: '8px', color: 'var(--text-grey)', textTransform: 'uppercase' }}>Borrow Fee</span>
+          <span style={{ fontSize: '10.5px', fontFamily: 'Source Code Pro, monospace', fontWeight: 'bold', color: 'var(--text-dark)' }}>
+            {formattedBorrowRate}
           </span>
         </div>
 
-        {/* Funding Short */}
+        {/* Spread */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-          <span style={{ fontSize: '8px', color: 'var(--text-grey)', textTransform: 'uppercase' }}>Funding Short</span>
-          <span style={{ fontSize: '10.5px', fontFamily: 'Source Code Pro, monospace', fontWeight: 'bold', color: '#3b82f6' }}>
-            -0.0100%
+          <span style={{ fontSize: '8px', color: 'var(--text-grey)', textTransform: 'uppercase' }}>Spread</span>
+          <span style={{ fontSize: '10.5px', fontFamily: 'Source Code Pro, monospace', fontWeight: 'bold', color: 'var(--text-dark)' }}>
+            {formattedSpread}
           </span>
         </div>
 
@@ -63,7 +183,7 @@ export function MobileTopNav({ activeMarketInfo, setIsMarketSelectorOpen }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
           <span style={{ fontSize: '8px', color: 'var(--text-grey)', textTransform: 'uppercase' }}>Open Interest</span>
           <span style={{ fontSize: '10.5px', fontFamily: 'Source Code Pro, monospace', fontWeight: 'bold', color: 'var(--text-dark)' }}>
-            {activeMarketInfo.symbol === 'XAU/USD' || activeMarketInfo.symbol === 'XAU-USD' ? '125.4M / 500M' : activeMarketInfo.symbol === 'BTC/USD' || activeMarketInfo.symbol === 'BTC-USDC' ? '42.8M / 200M' : '15.2M / 100M'}
+            {formatOIVal(totalOi)} / 200K
           </span>
         </div>
 
@@ -71,9 +191,9 @@ export function MobileTopNav({ activeMarketInfo, setIsMarketSelectorOpen }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
           <span style={{ fontSize: '8px', color: 'var(--text-grey)', textTransform: 'uppercase' }}>L/S Ratio</span>
           <span style={{ fontSize: '10.5px', fontFamily: 'Source Code Pro, monospace', fontWeight: 'bold' }}>
-            <span style={{ color: '#3b82f6' }}>65%</span>
+            <span style={{ color: '#3b82f6' }}>{longRatio}%</span>
             <span style={{ color: 'var(--text-grey)', margin: '0 2px' }}>/</span>
-            <span style={{ color: '#ef4444' }}>35%</span>
+            <span style={{ color: '#ef4444' }}>{100 - longRatio}%</span>
           </span>
         </div>
 
@@ -180,11 +300,9 @@ export function MobileTradeInfo({ onOpenMarket, activeView, setActiveView }) {
             
             <div className="mobile-scroll-stats" style={{ display: 'flex', gap: '16px', flexShrink: 0 }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                <span style={{ fontSize: '9px', color: 'var(--text-grey)', textTransform: 'uppercase' }}>Funding L/S</span>
-                <span style={{ fontSize: '10px', fontFamily: 'Source Code Pro, monospace', fontWeight: '500' }}>
-                  <span style={{ color: '#ef4444' }}>{stats.fundingLong}</span>
-                  <span style={{ color: 'var(--text-grey)', margin: '0 2px' }}>/</span>
-                  <span style={{ color: '#3b82f6' }}>{stats.fundingShort}</span>
+                <span style={{ fontSize: '9px', color: 'var(--text-grey)', textTransform: 'uppercase' }}>Borrow Fee</span>
+                <span style={{ fontSize: '10px', fontFamily: 'Source Code Pro, monospace', fontWeight: '500', color: 'var(--text-dark)' }}>
+                  0.00%
                 </span>
               </div>
 
@@ -236,18 +354,27 @@ export function MobileTradeInfo({ onOpenMarket, activeView, setActiveView }) {
 // 4. MOBILE POSITION MANAGER (Details & Edit Modal)
 // ----------------------------------------------------
 export function MobilePositionManager({ isOpen, onClose, position, initialTab = 'close' }) {
+  const { address, isConnected } = useAccount();
+  const { writeContractAsync } = useWriteContract();
+  const { showNotification } = useNotifications();
+
   const [activeTab, setActiveTab] = useState(initialTab);
   const [closeAmount, setCloseAmount] = useState(100);
   const [tpValue, setTpValue] = useState('');
   const [slValue, setSlValue] = useState('');
   const [marginAction, setMarginAction] = useState('add');
   const [marginAmount, setMarginAmount] = useState('');
+  const [actionLoading, setActionLoading] = useState(false);
 
   // Sync initial state when position/isOpen changes
   useEffect(() => {
     if (isOpen && position) {
-      setTpValue(position.tp?.replace('$', '') || '');
-      setSlValue(position.sl?.replace('$', '') || '');
+      // Extract raw numeric values from the smart contract database record
+      const rawTP = position.raw?.takeProfit ? (Number(position.raw.takeProfit) / 1e6).toString() : '';
+      const rawSL = position.raw?.stopLoss ? (Number(position.raw.stopLoss) / 1e6).toString() : '';
+      
+      setTpValue(rawTP === '0' ? '' : rawTP);
+      setSlValue(rawSL === '0' ? '' : rawSL);
     }
   }, [isOpen, position]);
 
@@ -257,6 +384,115 @@ export function MobilePositionManager({ isOpen, onClose, position, initialTab = 
       setActiveTab(initialTab);
     }
   }, [isOpen, initialTab]);
+
+  // Compute dynamic SL/TP targets based on exact percentage ROI, entry price and leverage
+  const handlePercentClick = (type, percentage) => {
+    if (!position || !position.raw) return;
+
+    const pct = parseFloat(percentage) / 100;
+    const entryPrice = parseFloat(position.raw.openPrice) / 1e6;
+    const leverage = parseFloat(position.raw.leverage);
+    const side = position.side;
+
+    if (type === 'tp') {
+      let tpPrice = 0;
+      if (side === 'Long') {
+        tpPrice = entryPrice * (1 + pct / leverage);
+      } else {
+        tpPrice = entryPrice * (1 - pct / leverage);
+      }
+      setTpValue(tpPrice.toFixed(2));
+    } else {
+      let slPrice = 0;
+      if (side === 'Long') {
+        slPrice = entryPrice * (1 - pct / leverage);
+      } else {
+        slPrice = entryPrice * (1 + pct / leverage);
+      }
+      setSlValue(slPrice.toFixed(2));
+    }
+  };
+
+  const handleExecuteAction = async () => {
+    if (!isConnected || !position || !position.raw) return;
+
+    setActionLoading(true);
+    try {
+      const tradeId = BigInt(position.raw.id);
+
+      if (activeTab === 'tpsl') {
+        showNotification('Updating Take Profit & Stop Loss levels...', 'info');
+
+        // Scale inputs back to 1e6 precision for Solidity
+        const newSLPrice = slValue && parseFloat(slValue) > 0 ? BigInt(Math.round(parseFloat(slValue) * 1e6)) : 0n;
+        const newTPPrice = tpValue && parseFloat(tpValue) > 0 ? BigInt(Math.round(parseFloat(tpValue) * 1e6)) : 0n;
+
+        const hash = await writeContractAsync({
+          address: CONFIG.addresses.core,
+          abi: coreAbi,
+          functionName: 'modifyStops',
+          args: [tradeId, newSLPrice, newTPPrice, false],
+          chainId: CONFIG.chainId,
+        });
+
+        showNotification('TP/SL modifications submitted successfully!', 'success', hash);
+        window.dispatchEvent(new CustomEvent('trade-updated'));
+        
+        setTimeout(() => {
+          onClose();
+        }, 1000);
+
+      } else if (activeTab === 'close') {
+        showNotification('Fetching proofs and closing position...', 'info');
+
+        const supraId = Number(position.raw?.supraId || 5500);
+
+        // 1. Fetch oracle proof
+        const proofRes = await fetch(`${CONFIG.apiUrl}/proof?pairs=${supraId}&network=${CONFIG.network}`);
+        if (!proofRes.ok) throw new Error("Failed to fetch oracle proof");
+        const proofData = await proofRes.json();
+        const oracleProof = proofData.proof;
+
+        // 2. Fetch KMS risk proofs
+        const kmsRes = await fetch(`${CONFIG.apiUrl}/kms-proof/${supraId}?network=${CONFIG.network}`);
+        if (!kmsRes.ok) throw new Error("Failed to fetch KMS risk proof");
+        const kmsData = await kmsRes.json();
+
+        const riskProof = {
+          supraId: BigInt(kmsData.supraId || supraId),
+          maxOILong: BigInt(kmsData.maxOILong),
+          maxOIShort: BigInt(kmsData.maxOIShort),
+          spreadLong: BigInt(kmsData.spreadLong),
+          spreadShort: BigInt(kmsData.spreadShort),
+          timestamp: BigInt(kmsData.timestamp),
+          sig: kmsData.sig,
+        };
+
+        const hash = await writeContractAsync({
+          address: CONFIG.addresses.core,
+          abi: coreAbi,
+          functionName: 'closePositionMarket',
+          args: [BigInt(supraId), tradeId, oracleProof, riskProof],
+          chainId: CONFIG.chainId,
+        });
+
+        showNotification('Close position transaction submitted successfully!', 'success', hash);
+        window.dispatchEvent(new CustomEvent('trade-updated'));
+
+        setTimeout(() => {
+          onClose();
+        }, 1000);
+
+      } else {
+        showNotification('Margin adjustments are handled directly through the Brokex dynamic Vault.', 'info');
+      }
+    } catch (err) {
+      console.error("Action execution failed:", err);
+      showNotification(`Operation failed: ${err.shortMessage || err.message || err}`, 'error');
+    } finally {
+      setActionLoading(false);
+    }
+  };
 
   if (!isOpen || !position) return null;
 
@@ -362,7 +598,7 @@ export function MobilePositionManager({ isOpen, onClose, position, initialTab = 
           padding: '8px 16px',
           background: 'rgba(0,0,0,0.1)'
         }}>
-          {['close', 'collateral', 'tpsl'].map(tab => (
+          {['tpsl', 'close', 'collateral'].map(tab => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -475,7 +711,6 @@ export function MobilePositionManager({ isOpen, onClose, position, initialTab = 
               <div style={{ background: 'rgba(255,255,255,0.02)', borderRadius: '6px', border: '1px solid var(--border-color)', padding: '10px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
                   <span style={{ fontSize: '9px', color: 'var(--text-grey)', textTransform: 'uppercase' }}>Amount</span>
-                  <span style={{ fontSize: '9px', color: 'var(--text-grey)' }}>Bal: 1,500 USDC</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <input
@@ -485,38 +720,34 @@ export function MobilePositionManager({ isOpen, onClose, position, initialTab = 
                   <span style={{ fontWeight: 'bold', fontSize: '11px', color: 'var(--text-dark)' }}>USDC</span>
                 </div>
               </div>
-              <div style={{ 
-                padding: '10px', 
-                background: 'rgba(255,255,255,0.02)', 
-                borderRadius: '6px', 
-                fontSize: '10px', 
-                display: 'flex', 
-                flexDirection: 'column', 
-                gap: '6px' 
-              }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-grey)' }}>New Leverage</span>
-                  <span style={{ color: goldAccent, fontWeight: 'bold' }}>{marginAction === 'add' ? '42x' : '58x'}</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-grey)' }}>New Liq. Price</span>
-                  <span style={{ color: '#ef4444', fontWeight: 'bold' }}>{marginAction === 'add' ? '$2,105.20' : '$2,350.40'}</span>
-                </div>
-              </div>
             </div>
           )}
 
           {activeTab === 'tpsl' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <span style={{ fontSize: '9px', color: 'var(--text-grey)' }}>TAKE PROFIT</span>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: '9px', color: 'var(--text-grey)' }}>TAKE PROFIT (USD)</span>
+                  <div style={{ display: 'flex', gap: '4px' }}>
+                    {['10%', '25%', '50%', '100%'].map(p => (
+                      <button key={p} style={{ fontSize: '8px', padding: '1px 4px', borderRadius: '3px', backgroundColor: 'rgba(255,255,255,0.04)', color: 'var(--text-grey)', cursor: 'pointer', border: '1px solid var(--border-color)' }} onClick={() => handlePercentClick('tp', p)}>{p}</button>
+                    ))}
+                  </div>
+                </div>
                 <input
                   type="number" value={tpValue} onChange={e => setTpValue(e.target.value)} placeholder="Target Price"
                   style={{ width: '100%', backgroundColor: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '8px', color: 'var(--text-dark)', fontSize: '12px', outline: 'none', fontFamily: 'Source Code Pro' }}
                 />
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <span style={{ fontSize: '9px', color: 'var(--text-grey)' }}>STOP LOSS</span>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: '9px', color: 'var(--text-grey)' }}>STOP LOSS (USD)</span>
+                  <div style={{ display: 'flex', gap: '4px' }}>
+                    {['10%', '25%', '50%', '100%'].map(p => (
+                      <button key={p} style={{ fontSize: '8px', padding: '1px 4px', borderRadius: '3px', backgroundColor: 'rgba(255,255,255,0.04)', color: 'var(--text-grey)', cursor: 'pointer', border: '1px solid var(--border-color)' }} onClick={() => handlePercentClick('sl', p)}>{p}</button>
+                    ))}
+                  </div>
+                </div>
                 <input
                   type="number" value={slValue} onChange={e => setSlValue(e.target.value)} placeholder="Stop Price"
                   style={{ width: '100%', backgroundColor: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '8px', color: 'var(--text-dark)', fontSize: '12px', outline: 'none', fontFamily: 'Source Code Pro' }}
@@ -530,22 +761,24 @@ export function MobilePositionManager({ isOpen, onClose, position, initialTab = 
         {/* Submit Actions Button */}
         <div style={{ padding: '16px', borderTop: '1px solid var(--border-color)', background: 'rgba(255,255,255,0.01)' }}>
           <button
-            onClick={onClose}
+            onClick={handleExecuteAction}
+            disabled={actionLoading}
             style={{ 
               width: '100%', 
               padding: '10px', 
               background: goldAccent, 
               border: 'none', 
               borderRadius: '6px', 
-              color: '#fff', 
+              color: '#000', 
               fontWeight: 'bold', 
               fontSize: '12px', 
               cursor: 'pointer', 
               textTransform: 'uppercase',
-              letterSpacing: '0.05em'
+              letterSpacing: '0.05em',
+              opacity: actionLoading ? 0.6 : 1
             }}
           >
-            {activeTab === 'close' ? `Close ${closeAmount}% Position` : activeTab === 'collateral' ? `${marginAction === 'add' ? 'Add' : 'Remove'} Margin` : 'Update TP/SL'}
+            {actionLoading ? 'Broadcasting...' : activeTab === 'close' ? `Close ${closeAmount}% Position` : activeTab === 'collateral' ? `${marginAction === 'add' ? 'Add' : 'Remove'} Margin` : 'Update TP/SL'}
           </button>
         </div>
       </div>

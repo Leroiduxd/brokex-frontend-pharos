@@ -1,28 +1,43 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
+import { useAccount, useWriteContract } from 'wagmi';
+import { coreAbi } from '../abi/core';
+import { CONFIG } from '../config';
+import { useNotifications } from '../context/NotificationContext';
 
 const goldAccent = '#BC8961';
 const goldAccentLight = 'rgba(188, 137, 97, 0.15)';
 
 export default function PositionManager({ position, isOpen, onClose }) {
+  const { address, isConnected } = useAccount();
+  const { writeContractAsync } = useWriteContract();
+  const { showNotification } = useNotifications();
+
   const [position_win, setPositionWin] = useState({ x: window.innerWidth / 2 - 370, y: window.innerHeight / 2 - 260 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
 
-  const [activeTab, setActiveTab] = useState('close'); // 'close', 'collateral', 'tpsl'
+  const [activeTab, setActiveTab] = useState('tpsl'); // Default to 'tpsl' as requested for stop modifications
   const [closeAmount, setCloseAmount] = useState(100);
-  const [tpValue, setTpValue] = useState(position?.tp || '');
-  const [slValue, setSlValue] = useState(position?.sl || '');
+  const [tpValue, setTpValue] = useState('');
+  const [slValue, setSlValue] = useState('');
   const [marginAction, setMarginAction] = useState('add');
   const [marginAmount, setMarginAmount] = useState('');
+  const [actionLoading, setActionLoading] = useState(false);
 
   const containerRef = useRef(null);
 
+  // Initialize and load real raw values from position.raw on mount/update
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && position) {
       setPositionWin({ x: window.innerWidth / 2 - 370, y: window.innerHeight / 2 - 260 });
-      setTpValue(position?.tp?.replace('$', '') || '');
-      setSlValue(position?.sl?.replace('$', '') || '');
+      
+      // Extract raw numeric values from the smart contract database record
+      const rawTP = position.raw?.takeProfit ? (Number(position.raw.takeProfit) / 1e6).toString() : '';
+      const rawSL = position.raw?.stopLoss ? (Number(position.raw.stopLoss) / 1e6).toString() : '';
+      
+      setTpValue(rawTP === '0' ? '' : rawTP);
+      setSlValue(rawSL === '0' ? '' : rawSL);
     }
   }, [isOpen, position]);
 
@@ -65,6 +80,116 @@ export default function PositionManager({ position, isOpen, onClose }) {
       document.body.style.userSelect = '';
     };
   }, [isDragging, dragOffset]);
+
+  // Compute dynamic SL/TP targets based on exact percentage ROI, entry price and leverage
+  const handlePercentClick = (type, percentage) => {
+    if (!position || !position.raw) return;
+
+    const pct = parseFloat(percentage) / 100;
+    const entryPrice = parseFloat(position.raw.openPrice) / 1e6;
+    const leverage = parseFloat(position.raw.leverage);
+    const side = position.side;
+
+    if (type === 'tp') {
+      let tpPrice = 0;
+      if (side === 'Long') {
+        tpPrice = entryPrice * (1 + pct / leverage);
+      } else {
+        tpPrice = entryPrice * (1 - pct / leverage);
+      }
+      setTpValue(tpPrice.toFixed(2));
+    } else {
+      let slPrice = 0;
+      if (side === 'Long') {
+        slPrice = entryPrice * (1 - pct / leverage);
+      } else {
+        slPrice = entryPrice * (1 + pct / leverage);
+      }
+      setSlValue(slPrice.toFixed(2));
+    }
+  };
+
+  // Execute active operations against the smart contract
+  const handleExecuteAction = async () => {
+    if (!isConnected || !position || !position.raw) return;
+
+    setActionLoading(true);
+    try {
+      const tradeId = BigInt(position.raw.id);
+
+      if (activeTab === 'tpsl') {
+        showNotification('Updating Take Profit & Stop Loss levels...', 'info');
+
+        // Scale inputs back to 1e6 precision for Solidity
+        const newSLPrice = slValue && parseFloat(slValue) > 0 ? BigInt(Math.round(parseFloat(slValue) * 1e6)) : 0n;
+        const newTPPrice = tpValue && parseFloat(tpValue) > 0 ? BigInt(Math.round(parseFloat(tpValue) * 1e6)) : 0n;
+
+        const hash = await writeContractAsync({
+          address: CONFIG.addresses.core,
+          abi: coreAbi,
+          functionName: 'modifyStops',
+          args: [tradeId, newSLPrice, newTPPrice, false],
+          chainId: CONFIG.chainId,
+        });
+
+        showNotification('TP/SL modifications submitted successfully!', 'success', hash);
+        window.dispatchEvent(new CustomEvent('trade-updated'));
+        
+        setTimeout(() => {
+          onClose();
+        }, 1000);
+
+      } else if (activeTab === 'close') {
+        showNotification('Fetching proofs and closing position...', 'info');
+
+        const supraId = Number(position.raw?.supraId || 5500);
+
+        // 1. Fetch oracle proof
+        const proofRes = await fetch(`${CONFIG.apiUrl}/proof?pairs=${supraId}&network=${CONFIG.network}`);
+        if (!proofRes.ok) throw new Error("Failed to fetch oracle proof");
+        const proofData = await proofRes.json();
+        const oracleProof = proofData.proof;
+
+        // 2. Fetch KMS risk proofs
+        const kmsRes = await fetch(`${CONFIG.apiUrl}/kms-proof/${supraId}?network=${CONFIG.network}`);
+        if (!kmsRes.ok) throw new Error("Failed to fetch KMS risk proof");
+        const kmsData = await kmsRes.json();
+
+        const riskProof = {
+          supraId: BigInt(kmsData.supraId || supraId),
+          maxOILong: BigInt(kmsData.maxOILong),
+          maxOIShort: BigInt(kmsData.maxOIShort),
+          spreadLong: BigInt(kmsData.spreadLong),
+          spreadShort: BigInt(kmsData.spreadShort),
+          timestamp: BigInt(kmsData.timestamp),
+          sig: kmsData.sig,
+        };
+
+        const hash = await writeContractAsync({
+          address: CONFIG.addresses.core,
+          abi: coreAbi,
+          functionName: 'closePositionMarket',
+          args: [BigInt(supraId), tradeId, oracleProof, riskProof],
+          chainId: CONFIG.chainId,
+        });
+
+        showNotification('Close position transaction submitted successfully!', 'success', hash);
+        window.dispatchEvent(new CustomEvent('trade-updated'));
+
+        setTimeout(() => {
+          onClose();
+        }, 1000);
+
+      } else {
+        showNotification('Margin adjustments are handled directly through the Brokex dynamic Vault.', 'info');
+      }
+    } catch (err) {
+      console.error("Action execution failed:", err);
+      showNotification(`Operation failed: ${err.shortMessage || err.message || err}`, 'error');
+    } finally {
+      setActionLoading(false);
+    }
+  };
 
   if (!isOpen || !position) return null;
 
@@ -164,6 +289,21 @@ export default function PositionManager({ position, isOpen, onClose }) {
         .close-btn-pos:hover {
           color: var(--text-dark);
         }
+        .pct-btn {
+          font-size: 9px;
+          padding: 2px 6px;
+          border-radius: 3px;
+          background-color: rgba(255,255,255,0.04);
+          color: var(--text-grey);
+          cursor: pointer;
+          border: 1px solid var(--border-color);
+          transition: all 0.2s;
+        }
+        .pct-btn:hover {
+          color: ${goldAccent};
+          border-color: ${goldAccent};
+          background-color: ${goldAccentLight};
+        }
       `}</style>
 
       {/* Absolute Close Button */}
@@ -198,15 +338,19 @@ export default function PositionManager({ position, isOpen, onClose }) {
           <div className="section-title">Trade Identification</div>
           <div className="detail-row">
             <span className="info-label">Trade ID</span>
-            <span className="info-value" style={{ color: goldAccent }}>{position.id}</span>
+            <span className="info-value" style={{ color: goldAccent }}>{position.raw?.id}</span>
           </div>
           <div className="detail-row">
             <span className="info-label">Wallet</span>
-            <span className="info-value">0x71...f2e9</span>
+            <span className="info-value">{address ? `${address.slice(0, 6)}...${address.slice(-4)}` : '—'}</span>
           </div>
           <div className="detail-row">
             <span className="info-label">Open Time</span>
-            <span className="info-value">2024-05-16 14:22:10</span>
+            <span className="info-value">
+              {position.raw?.openTimestamp 
+                ? new Date(Number(position.raw.openTimestamp) * 1000).toLocaleString() 
+                : '—'}
+            </span>
           </div>
 
           <div className="section-title">Position Metrics</div>
@@ -219,12 +363,12 @@ export default function PositionManager({ position, isOpen, onClose }) {
             <span className="info-value">{position.collateral}</span>
           </div>
           <div className="detail-row">
-            <span className="info-label">Net Value</span>
-            <span className="info-value" style={{ color: 'var(--text-dark)', fontWeight: 'bold' }}>$625.40</span>
+            <span className="info-label">Entry Price</span>
+            <span className="info-value">{position.openPrice}</span>
           </div>
           <div className="detail-row">
-            <span className="info-label">Margin Ratio</span>
-            <span className="info-value" style={{ color: goldAccent }}>2.04%</span>
+            <span className="info-label">Market Price</span>
+            <span className="info-value" style={{ color: goldAccent }}>{position.marketPrice}</span>
           </div>
 
           <div className="section-title">Risk Management</div>
@@ -233,26 +377,12 @@ export default function PositionManager({ position, isOpen, onClose }) {
             <span className="info-value" style={{ color: '#ef4444' }}>{position.liqPrice}</span>
           </div>
           <div className="detail-row">
-            <span className="info-label">Distance to Liq.</span>
-            <span className="info-value" style={{ color: '#ef4444' }}>1.28%</span>
+            <span className="info-label">Current TP</span>
+            <span className="info-value" style={{ color: '#3b82f6' }}>{position.tp}</span>
           </div>
           <div className="detail-row">
-            <span className="info-label">Max Drawdown</span>
-            <span className="info-value">-$42.10</span>
-          </div>
-
-          <div className="section-title">Costs & Fees</div>
-          <div className="detail-row">
-            <span className="info-label">Funding Fee</span>
-            <span className="info-value" style={{ color: '#ef4444' }}>-$1.42</span>
-          </div>
-          <div className="detail-row">
-            <span className="info-label">Borrow Rate</span>
-            <span className="info-value">0.0024% / hr</span>
-          </div>
-          <div className="detail-row">
-            <span className="info-label">Realized PnL</span>
-            <span className="info-value">$0.00</span>
+            <span className="info-label">Current SL</span>
+            <span className="info-value" style={{ color: '#ef4444' }}>{position.sl}</span>
           </div>
         </div>
       </div>
@@ -261,13 +391,46 @@ export default function PositionManager({ position, isOpen, onClose }) {
       <div style={{ flex: '1.1', background: 'var(--bg-dark)', padding: '44px 20px 24px 20px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
         {/* Tabs */}
         <div style={{ display: 'flex', gap: '4px', background: 'rgba(255,255,255,0.02)', padding: '3px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+          <div className={`manager-tab ${activeTab === 'tpsl' ? 'active' : ''}`} onClick={() => setActiveTab('tpsl')}>TP/SL</div>
           <div className={`manager-tab ${activeTab === 'close' ? 'active' : ''}`} onClick={() => setActiveTab('close')}>Close</div>
           <div className={`manager-tab ${activeTab === 'collateral' ? 'active' : ''}`} onClick={() => setActiveTab('collateral')}>Margin</div>
-          <div className={`manager-tab ${activeTab === 'tpsl' ? 'active' : ''}`} onClick={() => setActiveTab('tpsl')}>TP/SL</div>
         </div>
 
         {/* Content Area */}
         <div style={{ flex: 1, minHeight: '220px' }}>
+          {activeTab === 'tpsl' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: '11px', color: 'var(--text-grey)' }}>Take Profit (USD)</span>
+                  <div style={{ display: 'flex', gap: '4px' }}>
+                    {['10%', '25%', '50%', '100%'].map(p => (
+                      <button key={p} className="pct-btn" onClick={() => handlePercentClick('tp', p)}>{p}</button>
+                    ))}
+                  </div>
+                </div>
+                <input
+                  type="number" value={tpValue} onChange={e => setTpValue(e.target.value)} placeholder="Target Price (e.g. 2350.00)"
+                  style={{ width: '100%', backgroundColor: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '10px', color: 'var(--text-dark)', fontSize: '13px', outline: 'none', fontFamily: 'Source Code Pro' }}
+                />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: '11px', color: 'var(--text-grey)' }}>Stop Loss (USD)</span>
+                  <div style={{ display: 'flex', gap: '4px' }}>
+                    {['10%', '25%', '50%', '100%'].map(p => (
+                      <button key={p} className="pct-btn" onClick={() => handlePercentClick('sl', p)}>{p}</button>
+                    ))}
+                  </div>
+                </div>
+                <input
+                  type="number" value={slValue} onChange={e => setSlValue(e.target.value)} placeholder="Stop Price (e.g. 2280.00)"
+                  style={{ width: '100%', backgroundColor: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '10px', color: 'var(--text-dark)', fontSize: '13px', outline: 'none', fontFamily: 'Source Code Pro' }}
+                />
+              </div>
+            </div>
+          )}
+
           {activeTab === 'close' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -308,7 +471,6 @@ export default function PositionManager({ position, isOpen, onClose }) {
               <div style={{ background: 'rgba(255,255,255,0.02)', borderRadius: '6px', border: '1px solid var(--border-color)', padding: '12px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
                   <span style={{ fontSize: '11px', color: 'var(--text-grey)' }}>Amount</span>
-                  <span style={{ fontSize: '10px', color: 'var(--text-grey)' }}>Bal: 1,500 USDC</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <input
@@ -318,58 +480,17 @@ export default function PositionManager({ position, isOpen, onClose }) {
                   <span style={{ fontWeight: 'bold', fontSize: '14px', color: 'var(--text-dark)' }}>USDC</span>
                 </div>
               </div>
-              <div style={{ padding: '12px', background: 'rgba(255,255,255,0.02)', borderRadius: '6px', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-grey)' }}>New Leverage</span>
-                  <span style={{ color: goldAccent, fontWeight: 'bold' }}>{marginAction === 'add' ? '42x' : '58x'}</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-grey)' }}>New Liq. Price</span>
-                  <span style={{ color: '#ef4444', fontWeight: 'bold' }}>{marginAction === 'add' ? '$2,105.20' : '$2,350.40'}</span>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {activeTab === 'tpsl' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: '11px', color: 'var(--text-grey)' }}>Take Profit</span>
-                  <div style={{ display: 'flex', gap: '4px' }}>
-                    {['10%', '25%', '50%', '100%'].map(p => (
-                      <div key={p} style={{ fontSize: '9px', padding: '2px 4px', borderRadius: '3px', backgroundColor: 'rgba(255,255,255,0.05)', color: 'var(--text-grey)', cursor: 'pointer', border: '1px solid var(--border-color)' }}>{p}</div>
-                    ))}
-                  </div>
-                </div>
-                <input
-                  type="number" value={tpValue} onChange={e => setTpValue(e.target.value)} placeholder="Target Price"
-                  style={{ width: '100%', backgroundColor: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '10px', color: 'var(--text-dark)', fontSize: '13px', outline: 'none', fontFamily: 'Source Code Pro' }}
-                />
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: '11px', color: 'var(--text-grey)' }}>Stop Loss</span>
-                  <div style={{ display: 'flex', gap: '4px' }}>
-                    {['10%', '25%', '50%', '100%'].map(p => (
-                      <div key={p} style={{ fontSize: '9px', padding: '2px 4px', borderRadius: '3px', backgroundColor: 'rgba(255,255,255,0.05)', color: 'var(--text-grey)', cursor: 'pointer', border: '1px solid var(--border-color)' }}>{p}</div>
-                    ))}
-                  </div>
-                </div>
-                <input
-                  type="number" value={slValue} onChange={e => setSlValue(e.target.value)} placeholder="Stop Price"
-                  style={{ width: '100%', backgroundColor: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '10px', color: 'var(--text-dark)', fontSize: '13px', outline: 'none', fontFamily: 'Source Code Pro' }}
-                />
-              </div>
             </div>
           )}
         </div>
 
         {/* Action Button */}
         <button
-          style={{ width: '100%', padding: '14px', background: goldAccent, border: 'none', borderRadius: '6px', color: '#fff', fontWeight: 'bold', fontSize: '14px', cursor: 'pointer', transition: 'opacity 0.2s', marginTop: 'auto' }}
+          onClick={handleExecuteAction}
+          disabled={actionLoading}
+          style={{ width: '100%', padding: '14px', background: goldAccent, border: 'none', borderRadius: '6px', color: '#000', fontWeight: 'bold', fontSize: '14px', cursor: 'pointer', transition: 'opacity 0.2s', marginTop: 'auto', opacity: actionLoading ? 0.6 : 1 }}
         >
-          {activeTab === 'close' ? `Close ${closeAmount}% Position` : activeTab === 'collateral' ? `${marginAction === 'add' ? 'Add' : 'Remove'} Margin` : 'Update TP/SL'}
+          {actionLoading ? 'Broadcasting...' : activeTab === 'close' ? `Close ${closeAmount}% Position` : activeTab === 'collateral' ? `${marginAction === 'add' ? 'Add' : 'Remove'} Margin` : 'Update TP/SL'}
         </button>
       </div>
     </div>

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 
 const ASSETS = [
   { symbol: 'BTC/USD', name: 'Bitcoin' },
@@ -11,54 +11,96 @@ const ASSETS = [
   { symbol: 'WTI/USD', name: 'Oil' },
 ]
 
+function cleanSymbol(symbol) {
+  return symbol
+    .replace('Metal.', '')
+    .replace('Crypto.', '')
+    .replace('Commodities.', '')
+    .replace('FX.', '')
+    .replace('Equity.US.', '')
+    .replace('BTC/USD', 'BTC/USD')
+    .replace('ETH/USD', 'ETH/USD')
+    .replace('SOL/USD', 'SOL/USD')
+    .replace('USOILSPOT', 'WTI/USD');
+}
+
 export default function Ticker() {
-  const [viewMode, setViewMode] = useState('winners') // 'winners', 'losers', 'favorites'
-  
+  const [viewMode, setViewMode] = useState('winners') // 'winners', 'losers'
+  const [apiData, setApiData] = useState([]);
+
+  useEffect(() => {
+    fetch('https://api.brokex.trade/price-differences')
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          setApiData(data);
+        }
+      })
+      .catch(err => console.error("Failed to fetch price differences:", err));
+  }, []);
+
   const toggleMode = () => {
-    const modes = ['winners', 'losers', 'favorites']
-    const nextIndex = (modes.indexOf(viewMode) + 1) % modes.length
-    setViewMode(modes[nextIndex])
+    setViewMode(prev => prev === 'winners' ? 'losers' : 'winners')
   }
 
   // Icons
   const UpArrow = () => (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 19V5M5 12l7-7 7 7" />
     </svg>
   );
 
   const DownArrow = () => (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 5v14M5 12l7 7 7-7" />
     </svg>
   );
 
-  const StarIcon = ({ fill = "currentColor" }) => (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill={fill} xmlns="http://www.w3.org/2000/svg" style={{ stroke: 'currentColor', strokeWidth: '2', strokeLinejoin: 'round', strokeLinecap: 'round' }}>
-      <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-    </svg>
-  );
+  // Map real day differences or fallback to mock data
+  const formattedAssets = useMemo(() => {
+    if (apiData.length === 0) {
+      return ASSETS.map(asset => {
+        const variation = parseFloat((Math.random() * 5).toFixed(2));
+        const isUp = Math.random() > 0.5;
+        const val = isUp ? variation : -variation;
+        return {
+          symbol: asset.symbol,
+          val: val,
+          displayVal: `${isUp ? '+' : ''}${val.toFixed(2)}%`,
+          isUp
+        };
+      });
+    }
 
-  // Generate random data for assets
-  const assetData = useMemo(() => {
-    return ASSETS.map(asset => {
-      const variation = (Math.random() * 5).toFixed(2)
-      const isUp = Math.random() > 0.5
+    return apiData.map(item => {
+      const val = parseFloat((item.day_price_diff_decimal * 100).toFixed(2));
+      const isUp = val >= 0;
       return {
-        ...asset,
-        winnersVal: `+${variation}%`,
-        losersVal: `-${variation}%`,
-        favVal: `${isUp ? '+' : '-'}${variation}%`,
+        symbol: cleanSymbol(item.symbol),
+        val: val,
+        displayVal: `${isUp ? '+' : ''}${val.toFixed(2)}%`,
         isUp
-      }
-    })
-  }, [])
+      };
+    });
+  }, [apiData]);
+
+  // Filter and Sort dynamically based on winners/losers mode
+  const displayedAssets = useMemo(() => {
+    if (viewMode === 'winners') {
+      return formattedAssets
+        .filter(a => a.val > 0)
+        .sort((a, b) => b.val - a.val);
+    } else {
+      return formattedAssets
+        .filter(a => a.val < 0)
+        .sort((a, b) => a.val - b.val);
+    }
+  }, [formattedAssets, viewMode]);
 
   const getTheme = () => {
     switch (viewMode) {
       case 'winners': return { color: '#3b82f6', bg: 'rgba(59, 130, 246, 0.15)', label: 'TOP WINNERS', icon: <UpArrow /> }
       case 'losers': return { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.15)', label: 'TOP LOSERS', icon: <DownArrow /> }
-      case 'favorites': return { color: 'var(--gold)', bg: 'rgba(200, 169, 126, 0.15)', label: 'FAVORITES', icon: <StarIcon fill="var(--gold)" /> }
       default: return { color: '#3b82f6', bg: 'rgba(59, 130, 246, 0.15)', label: 'TOP WINNERS', icon: <UpArrow /> }
     }
   }
@@ -76,7 +118,7 @@ export default function Ticker() {
       padding: '0 10px',
       overflow: 'hidden'
     }}>
-      {/* Toggle Button - Fixe à gauche */}
+      {/* Toggle Button */}
       <button 
         onClick={toggleMode}
         style={{
@@ -105,7 +147,7 @@ export default function Ticker() {
         {theme.label}
       </button>
 
-      {/* Liste Fixe des Actifs */}
+      {/* Scroller list */}
       <div 
         className="ticker-scroll"
         style={{
@@ -116,20 +158,17 @@ export default function Ticker() {
           justifyContent: 'flex-start',
           gap: '20px',
           overflowX: 'auto',
-          scrollbarWidth: 'none', // Firefox
-          msOverflowStyle: 'none' // IE/Edge
+          scrollbarWidth: 'none',
+          msOverflowStyle: 'none'
         }}
       >
         <style>{`
           .ticker-scroll::-webkit-scrollbar {
-            display: none; // Chrome/Safari
+            display: none;
           }
         `}</style>
-        {assetData.map((asset, index) => {
-          let displayColor = theme.color;
-          if (viewMode === 'favorites') {
-            displayColor = asset.isUp ? '#3b82f6' : '#ef4444';
-          }
+        {displayedAssets.map((asset, index) => {
+          const displayColor = asset.isUp ? '#3b82f6' : '#ef4444';
 
           return (
             <div key={`${asset.symbol}-${index}`} style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '8px', whiteSpace: 'nowrap' }}>
@@ -143,14 +182,8 @@ export default function Ticker() {
                 alignItems: 'center',
                 gap: '4px'
               }}>
-                {viewMode === 'winners' && <><UpArrow /> {asset.winnersVal}</>}
-                {viewMode === 'losers' && <><DownArrow /> {asset.losersVal}</>}
-                {viewMode === 'favorites' && (
-                  <>
-                    {asset.isUp ? <UpArrow /> : <DownArrow />}
-                    {asset.favVal}
-                  </>
-                )}
+                {asset.isUp ? <UpArrow /> : <DownArrow />}
+                {asset.displayVal}
               </span>
             </div>
           );

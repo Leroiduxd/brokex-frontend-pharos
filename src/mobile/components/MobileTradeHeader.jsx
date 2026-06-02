@@ -5,7 +5,16 @@ export default function MobileTradeHeader({ activeMarketInfo, setIsMarketSelecto
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', padding: '12px 12px 8px 12px', background: 'transparent', width: '100%' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', flexGrow: 1 }} onClick={() => setIsMarketSelectorOpen(true)}>
+      <div 
+        style={{ 
+          display: 'flex', 
+          alignItems: 'center', 
+          gap: '10px', 
+          cursor: setIsMarketSelectorOpen ? 'pointer' : 'default', 
+          flexGrow: 1 
+        }} 
+        onClick={setIsMarketSelectorOpen ? () => setIsMarketSelectorOpen(true) : undefined}
+      >
         {/* Logo box */}
         <div style={{
           width: '36px',

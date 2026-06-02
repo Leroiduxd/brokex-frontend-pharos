@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createChart, ColorType, CandlestickSeries, AreaSeries } from 'lightweight-charts';
+import { CONFIG } from '../config';
 
 export default function Chart() {
   const chartContainerRef = useRef(null);
@@ -8,6 +9,9 @@ export default function Chart() {
   const seriesRef = useRef(null);
   const lastPriceRef = useRef(2300);
   const lastTimeRef = useRef(Math.floor(Date.now() / 1000));
+  const lastCandleRef = useRef(null);
+  const loadedDaysRef = useRef(7);
+  const isLoadingMoreRef = useRef(false);
 
   const [activeTimeframe, setActiveTimeframe] = useState('15m');
   const [isCandleType, setIsCandleType] = useState(true);
@@ -27,6 +31,15 @@ export default function Chart() {
           textColor: '#888',
           fontSize: 10,
           fontFamily: "'Source Code Pro', monospace",
+        },
+        watermark: {
+          visible: true,
+          fontSize: 24,
+          fontFamily: "'Source Code Pro', monospace",
+          color: 'rgba(188, 137, 97, 0.08)',
+          text: 'BROKEX PROTOCOL',
+          horzAlign: 'center',
+          vertAlign: 'center',
         },
         grid: {
           vertLines: { color: 'rgba(255,255,255,0.02)' },
@@ -69,7 +82,52 @@ export default function Chart() {
     }
   }, []);
 
-  // Update Series and Data
+  // Dynamic theme support for Lightweight Charts grid and label visibility in Light/Dark mode
+  useEffect(() => {
+    if (!chartInstance) return;
+
+    const checkAndUpdateTheme = () => {
+      const isLight = document.body.classList.contains('light-mode');
+      
+      chartInstance.applyOptions({
+        layout: {
+          background: { type: ColorType.Solid, color: 'transparent' },
+          textColor: isLight ? '#555555' : '#888888',
+        },
+        watermark: {
+          color: isLight ? 'rgba(188, 137, 97, 0.08)' : 'rgba(188, 137, 97, 0.08)',
+        },
+        grid: {
+          vertLines: { color: isLight ? 'rgba(0, 0, 0, 0.07)' : 'rgba(255, 255, 255, 0.02)' },
+          horzLines: { color: isLight ? 'rgba(0, 0, 0, 0.07)' : 'rgba(255, 255, 255, 0.02)' },
+        },
+        rightPriceScale: {
+          borderColor: isLight ? 'rgba(0, 0, 0, 0.08)' : 'rgba(255, 255, 255, 0.05)',
+        },
+        timeScale: {
+          borderColor: isLight ? 'rgba(0, 0, 0, 0.08)' : 'rgba(255, 255, 255, 0.05)',
+        }
+      });
+    };
+
+    checkAndUpdateTheme();
+
+    const observer = new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => {
+        if (mutation.attributeName === 'class') {
+          checkAndUpdateTheme();
+        }
+      });
+    });
+
+    observer.observe(document.body, { attributes: true });
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [chartInstance]);
+
+  // Update Series Type
   useEffect(() => {
     if (!chartInstance) return;
 
@@ -96,67 +154,246 @@ export default function Chart() {
         });
       }
       seriesRef.current = series;
-
-      // Initial historical data
-      const data = [];
-      let price = 2300;
-      const interval = 60;
-      const now = Math.floor(Date.now() / 1000);
-
-      for (let i = 0; i < 200; i++) {
-        const time = now - (200 - i) * interval;
-        const open = price;
-        const close = price + (Math.random() - 0.5) * 10;
-        const high = Math.max(open, close) + Math.random() * 2;
-        const low = Math.min(open, close) - Math.random() * 2;
-
-        if (isCandleType) {
-          data.push({ time, open, high, low, close });
-        } else {
-          data.push({ time, value: close });
-        }
-        price = close;
-      }
-
-      series.setData(data);
-      lastPriceRef.current = price;
-      lastTimeRef.current = now;
-      chartInstance.timeScale().fitContent();
     } catch (err) {
       console.error("Series update error:", err);
       setError(err.message);
     }
   }, [chartInstance, isCandleType]);
 
-  // Live updates
+  // Load candles from API
   useEffect(() => {
     if (!chartInstance || !seriesRef.current) return;
 
-    const timer = setInterval(() => {
-      if (!seriesRef.current) return;
+    let isMounted = true;
+    let pollInterval = null;
 
-      const change = (Math.random() - 0.5) * 4;
-      const newPrice = lastPriceRef.current + change;
+    // Reset loaded days when timeframe changes to default baseline
+    const initialDaysMap = {
+      '1m': 3,
+      '5m': 5,
+      '15m': 7,
+      '1h': 15,
+      '4h': 30,
+      '1d': 90,
+      '1w': 180,
+    };
+    
+    // Set baseline loaded days for current timeframe
+    loadedDaysRef.current = initialDaysMap[activeTimeframe] || 7;
 
-      if (isCandleType) {
-        seriesRef.current.update({
-          time: lastTimeRef.current,
-          open: lastPriceRef.current,
-          high: Math.max(lastPriceRef.current, newPrice) + 0.5,
-          low: Math.min(lastPriceRef.current, newPrice) - 0.5,
-          close: newPrice
-        });
-      } else {
-        seriesRef.current.update({
-          time: lastTimeRef.current,
-          value: newPrice
-        });
+    const fetchCandles = async (isScrollLoad = false) => {
+      try {
+        const symbol = 'Metal.XAU/USD';
+        
+        // Map timeframe to minutes
+        const tfMap = {
+          '1m': '1',
+          '5m': '5',
+          '15m': '15',
+          '1h': '60',
+          '4h': '240',
+          '1d': '1440',
+          '1w': '1440',
+        };
+        const tfVal = tfMap[activeTimeframe] || '15';
+        const daysVal = loadedDaysRef.current;
+
+        const url = `${CONFIG.apiUrl}/candles?symbol=${symbol}&timeframe=${tfVal}&days=${daysVal}`;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP error ${response.status}`);
+        
+        const result = await response.json();
+        if (!isMounted) return;
+
+        if (result && result.data && result.data.length > 0) {
+          const formattedData = result.data.map(bar => {
+            if (isCandleType) {
+              return {
+                time: bar.time,
+                open: bar.open,
+                high: bar.high,
+                low: bar.low,
+                close: bar.close,
+              };
+            } else {
+              return {
+                time: bar.time,
+                value: bar.close,
+              };
+            }
+          });
+
+          seriesRef.current.setData(formattedData);
+          setError(null);
+
+          // Update refs for any active live ticking
+          const lastCandle = result.data[result.data.length - 1];
+          lastPriceRef.current = lastCandle.close;
+          lastTimeRef.current = lastCandle.time;
+          lastCandleRef.current = lastCandle;
+        } else {
+          if (!isScrollLoad) {
+            setError("No candle data returned from API");
+          }
+        }
+      } catch (err) {
+        console.error("Error fetching candles:", err);
+        if (!isScrollLoad) {
+          setError(`Failed to load chart data: ${err.message}`);
+        }
+      } finally {
+        if (isScrollLoad) {
+          isLoadingMoreRef.current = false;
+        }
       }
-      lastPriceRef.current = newPrice;
-    }, 1000);
+    };
 
-    return () => clearInterval(timer);
-  }, [chartInstance, isCandleType]);
+    // Initial fetch
+    fetchCandles(false);
+
+    // Subscribe to visible range changes to detect scrolling to the left
+    const handleVisibleRangeChange = (newVisibleLogicalRange) => {
+      if (newVisibleLogicalRange === null) return;
+      
+      // If we scroll to the left (near the beginning of the loaded candles)
+      if (newVisibleLogicalRange.from < 15 && !isLoadingMoreRef.current) {
+        // Cap max loading to 365 days
+        if (loadedDaysRef.current >= 365) return;
+
+        isLoadingMoreRef.current = true;
+        
+        // Load more history: add a dynamic timeframe-appropriate chunk
+        const increment = activeTimeframe === '1d' || activeTimeframe === '1w' ? 60 : 7;
+        loadedDaysRef.current = Math.min(365, loadedDaysRef.current + increment);
+        
+        console.log(`Scrolling left: Loading more history up to ${loadedDaysRef.current} days...`);
+        fetchCandles(true);
+      }
+    };
+
+    chartInstance.timeScale().subscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
+
+    // Poll every 10 seconds for real-time updates from backend
+    pollInterval = setInterval(() => fetchCandles(false), 10000);
+
+    return () => {
+      isMounted = false;
+      if (pollInterval) clearInterval(pollInterval);
+      if (chartInstance && chartInstance.timeScale) {
+        chartInstance.timeScale().unsubscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
+      }
+    };
+  }, [chartInstance, activeTimeframe, isCandleType]);
+
+  // Live WebSocket ticking
+  useEffect(() => {
+    if (!chartInstance || !seriesRef.current) return;
+
+    let ws = null;
+    let reconnectTimeout = null;
+    
+    const currentCandleOpenRef = { current: null };
+    const activeHighRef = { current: null };
+    const activeLowRef = { current: null };
+
+    const tfMap = {
+      '1m': 1,
+      '5m': 5,
+      '15m': 15,
+      '1h': 60,
+      '4h': 240,
+      '1d': 1440,
+      '1w': 1440, // Aligned with the REST API timeframe grouping
+    };
+
+    const connectWS = () => {
+      const wsUrl = CONFIG.apiUrl.replace('https://', 'wss://').replace('http://', 'ws://') + '/ws/gold';
+      ws = new WebSocket(wsUrl);
+
+      ws.onmessage = (event) => {
+        try {
+          if (!seriesRef.current) return;
+          
+          const data = JSON.parse(event.data);
+          if (data && data.xau_usd && data.xau_usd.instruments && data.xau_usd.instruments.length > 0) {
+            const instrument = data.xau_usd.instruments[0];
+            const price = parseFloat(instrument.currentPrice);
+            const timestampInSeconds = Math.floor(instrument.timestamp / 1000);
+
+            if (isNaN(price) || isNaN(timestampInSeconds)) return;
+
+            // Calculate current candle period time
+            const tfMinutes = tfMap[activeTimeframe] || 15;
+            const tfSeconds = tfMinutes * 60;
+            const candleTime = Math.floor(timestampInSeconds / tfSeconds) * tfSeconds;
+
+            // Detect candle start or update existing candle
+            if (candleTime === lastTimeRef.current) {
+              if (lastCandleRef.current) {
+                currentCandleOpenRef.current = lastCandleRef.current.open;
+                activeHighRef.current = lastCandleRef.current.high;
+                activeLowRef.current = lastCandleRef.current.low;
+              } else {
+                currentCandleOpenRef.current = price;
+                activeHighRef.current = price;
+                activeLowRef.current = price;
+              }
+            } else if (candleTime > lastTimeRef.current) {
+              // New candle period started
+              currentCandleOpenRef.current = price;
+              activeHighRef.current = price;
+              activeLowRef.current = price;
+              lastTimeRef.current = candleTime;
+              lastCandleRef.current = {
+                time: candleTime,
+                open: price,
+                high: price,
+                low: price,
+                close: price
+              };
+            }
+
+            // Update series in real-time
+            if (isCandleType) {
+              seriesRef.current.update({
+                time: candleTime,
+                open: currentCandleOpenRef.current,
+                high: activeHighRef.current,
+                low: activeLowRef.current,
+                close: price
+              });
+            } else {
+              seriesRef.current.update({
+                time: candleTime,
+                value: price
+              });
+            }
+
+            // Keep track of the last price
+            lastPriceRef.current = price;
+          }
+        } catch (err) {
+          console.error("Chart WS parse error:", err);
+        }
+      };
+
+      ws.onerror = (err) => {
+        console.error("Chart WS error:", err);
+      };
+
+      ws.onclose = () => {
+        console.log("Chart WS connection closed, reconnecting in 3s...");
+        reconnectTimeout = setTimeout(connectWS, 3000);
+      };
+    };
+
+    connectWS();
+
+    return () => {
+      if (ws) ws.close();
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+    };
+  }, [chartInstance, activeTimeframe, isCandleType]);
 
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {

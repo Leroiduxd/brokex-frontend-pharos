@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import { useAccount } from 'wagmi';
+import { useConnectModal, useAccountModal, useChainModal } from '@rainbow-me/rainbowkit';
 
 const TICKER_ITEMS = [
   { symbol: 'BTC', price: '$78,207', change: '-1.1%', isUp: false },
@@ -17,23 +19,14 @@ export default function MobileLayout({ children, disablePadding = false }) {
     document.body.classList.contains('light-mode')
   );
 
-  const [isConnected, setIsConnected] = useState(() => {
-    return localStorage.getItem('brokex_wallet_connected') === 'true';
-  });
+  const { isConnected, address } = useAccount();
+  const { openConnectModal } = useConnectModal();
+  const { openAccountModal } = useAccountModal();
+  const { openChainModal } = useChainModal();
 
-  // Sync wallet state with other pages/triggers
-  useEffect(() => {
-    const handleStorageChange = () => {
-      setIsConnected(localStorage.getItem('brokex_wallet_connected') === 'true');
-    };
-    window.addEventListener('storage', handleStorageChange);
-    // Custom event to sync connection in the same tab immediately
-    window.addEventListener('wallet_connection_changed', handleStorageChange);
-    return () => {
-      window.removeEventListener('storage', handleStorageChange);
-      window.removeEventListener('wallet_connection_changed', handleStorageChange);
-    };
-  }, []);
+  const displayAddress = address
+    ? `${address.slice(0, 4)}...${address.slice(-4)}`
+    : 'Connected';
 
   const toggleTheme = () => {
     const newMode = !isLightMode;
@@ -41,13 +34,6 @@ export default function MobileLayout({ children, disablePadding = false }) {
     document.body.classList.toggle('light-mode');
   };
 
-  const handleConnectWallet = () => {
-    const nextState = !isConnected;
-    setIsConnected(nextState);
-    localStorage.setItem('brokex_wallet_connected', String(nextState));
-    // Dispatch custom event to notify other components instantly
-    window.dispatchEvent(new Event('wallet_connection_changed'));
-  };
 
   return (
     <div style={{
@@ -174,9 +160,9 @@ export default function MobileLayout({ children, disablePadding = false }) {
         }
 
         .mobile-wallet-btn.connected {
-          background: rgba(200, 169, 126, 0.08);
-          color: var(--gold);
-          border: 1px solid rgba(200, 169, 126, 0.3);
+          background: var(--panel-bg);
+          color: var(--text-dark);
+          border: 1px solid var(--border-color);
           box-shadow: none;
           font-family: 'Source Code Pro', monospace;
           font-weight: 500;
@@ -219,25 +205,35 @@ export default function MobileLayout({ children, disablePadding = false }) {
           {/* Theme Toggle */}
           <button className="mobile-action-btn" onClick={toggleTheme}>
             {isLightMode ? (
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" /></svg>
             ) : (
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5" /><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" /></svg>
             )}
           </button>
 
           {/* Wallet Button */}
-          <button 
+          <button
             className={`mobile-wallet-btn ${isConnected ? 'connected' : ''}`}
-            onClick={handleConnectWallet}
+            onClick={() => {
+              if (isConnected) {
+                if (openAccountModal) {
+                  openAccountModal();
+                } else if (openChainModal) {
+                  openChainModal();
+                }
+              } else {
+                if (openConnectModal) openConnectModal();
+              }
+            }}
             style={{ fontWeight: '500' }}
           >
-            {isConnected ? '0x7a...4d' : 'Connect Wallet'}
+            {isConnected ? displayAddress : 'Connect Wallet'}
           </button>
         </div>
       </header>
 
       {/* Page Content */}
-      <main 
+      <main
         className="mobile-content"
         style={disablePadding ? {
           padding: 0,

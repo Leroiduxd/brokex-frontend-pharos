@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { useAccount } from 'wagmi';
+import { useConnectModal } from '@rainbow-me/rainbowkit';
+import { CONFIG } from '../../config';
 import Chart from '../../components/Chart';
 import MobileLayout from '../components/MobileLayout';
 import { 
@@ -62,21 +65,269 @@ export default function MobileTrade() {
   const [selectedPosition, setSelectedPosition] = useState(null);
   const [posManagerTab, setPosManagerTab] = useState('close');
 
-  const [isConnected, setIsConnected] = useState(() => {
-    return localStorage.getItem('brokex_wallet_connected') === 'true';
-  });
+  const { address, isConnected } = useAccount();
+  const { openConnectModal } = useConnectModal();
 
+  const [apiTrades, setApiTrades] = useState([]);
+  const [liveGoldPrice, setLiveGoldPrice] = useState(2315.50);
+  const [spreadLong, setSpreadLong] = useState(0);
+  const [spreadShort, setSpreadShort] = useState(0);
+  const [usdcBalance, setUsdcBalance] = useState('0.00');
+
+  // Establish WebSocket connection for live Gold price ticking
   useEffect(() => {
-    const handleStorageChange = () => {
-      setIsConnected(localStorage.getItem('brokex_wallet_connected') === 'true');
+    let ws = null;
+    let reconnectTimeout = null;
+
+    const connectWS = () => {
+      ws = new WebSocket('wss://api.brokex.trade/ws/gold');
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data && data.xau_usd && data.xau_usd.instruments && data.xau_usd.instruments.length > 0) {
+            const priceVal = parseFloat(data.xau_usd.instruments[0].currentPrice);
+            if (!isNaN(priceVal)) {
+              setLiveGoldPrice(priceVal);
+            }
+          }
+        } catch (err) {
+          // Keep base price if parsing error
+        }
+      };
+
+      ws.onclose = () => {
+        reconnectTimeout = setTimeout(connectWS, 3000);
+      };
     };
-    window.addEventListener('storage', handleStorageChange);
-    window.addEventListener('wallet_connection_changed', handleStorageChange);
+
+    connectWS();
+
     return () => {
-      window.removeEventListener('storage', handleStorageChange);
-      window.removeEventListener('wallet_connection_changed', handleStorageChange);
+      if (ws) ws.close();
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
     };
   }, []);
+
+  // Fetch real-time spreads from WebSocket
+  useEffect(() => {
+    let ws = null;
+    let reconnectTimeout = null;
+
+    const connectWS = () => {
+      const wsUrl = `${CONFIG.apiUrl.replace('https', 'wss').replace('http', 'ws')}/ws/spread`;
+      ws = new WebSocket(wsUrl);
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          const currentNetwork = CONFIG.network || 'testnet';
+          const networkSpreads = data[currentNetwork];
+          if (networkSpreads) {
+            setSpreadLong(parseFloat(networkSpreads.spreadLong) || 0);
+            setSpreadShort(parseFloat(networkSpreads.spreadShort) || 0);
+          }
+        } catch (err) {
+          console.error("MobileTrade Spread WS parsing error:", err);
+        }
+      };
+
+      ws.onclose = () => {
+        reconnectTimeout = setTimeout(connectWS, 3000);
+      };
+
+      ws.onerror = (err) => {
+        console.error("MobileTrade Spread WS error:", err);
+      };
+    };
+
+    connectWS();
+
+    return () => {
+      if (ws) ws.close();
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+    };
+  }, []);
+
+  // Fetch direct USDC balance via eth_call RPC every 5 seconds
+  useEffect(() => {
+    if (!address) {
+      setUsdcBalance('0.00');
+      return;
+    }
+
+    const fetchBalance = async () => {
+      try {
+        const cleanAddr = address.replace('0x', '').toLowerCase().padStart(64, '0');
+        const callData = '0x70a08231' + cleanAddr;
+        const response = await fetch(CONFIG.rpcUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'eth_call',
+            params: [
+              {
+                to: CONFIG.addresses.usdc,
+                data: callData
+              },
+              'latest'
+            ],
+            id: 1
+          })
+        });
+        const resData = await response.json();
+        if (resData && resData.result && resData.result !== '0x') {
+          const rawBal = BigInt(resData.result);
+          setUsdcBalance((Number(rawBal) / 1e6).toFixed(2));
+        } else {
+          setUsdcBalance('0.00');
+        }
+      } catch (err) {
+        console.error("Failed to fetch direct USDC balance on mobile portfolio:", err);
+      }
+    };
+
+    fetchBalance();
+    const interval = setInterval(fetchBalance, 5000);
+    return () => clearInterval(interval);
+  }, [address]);
+
+  // Fetch user trades from API
+  useEffect(() => {
+    if (!isConnected || !address) {
+      setApiTrades([]);
+      return;
+    }
+
+    const fetchTrades = () => {
+      fetch(`${CONFIG.apiUrl}/trades/${address}?network=${CONFIG.network}`)
+        .then(res => res.json())
+        .then(data => {
+          if (Array.isArray(data)) {
+            setApiTrades(data);
+          }
+        })
+        .catch(err => console.error("MobileTrade fetch trades error:", err));
+    };
+
+    fetchTrades();
+    const interval = setInterval(fetchTrades, 10000);
+
+    const handleTradeUpdated = () => {
+      fetchTrades();
+    };
+    window.addEventListener('trade-updated', handleTradeUpdated);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('trade-updated', handleTradeUpdated);
+    };
+  }, [address, isConnected]);
+
+  // Dynamically compute all portfolio statistics with elegant mock fallbacks when not connected
+  const portfolioStats = useMemo(() => {
+    if (!isConnected || !address) {
+      return {
+        totalEquity: 1965.60,
+        unrealizedPnl: 465.60,
+        unrealizedPnlPct: 31.0,
+        freeMargin: 1500.00,
+        lockedCapital: 1000.00,
+        realizedPnl: 1799.63,
+        totalVolume: 203444.31,
+        winRate: 62.8,
+        tradesCount: 35,
+        winsCount: 22,
+        lossesCount: 13,
+        isMock: true
+      };
+    }
+
+    const activeList = apiTrades.filter(t => t.state === 1);
+    const closedList = apiTrades.filter(t => t.state >= 2);
+
+    // Sum of margins in active positions (scaled down by 1e6)
+    const lockedCapital = activeList.reduce((sum, t) => sum + (parseFloat(t.margin || '0') / 1e6), 0);
+
+    // Free margin is the direct wallet USDC balance
+    const freeMargin = parseFloat(usdcBalance) || 0;
+
+    // Unrealized PnL based on real-time gold price feed with spreads taken into account
+    let unrealizedPnl = 0;
+    activeList.forEach(t => {
+      const sizeVal = parseFloat(t.openInterest || '0') / 1e6;
+      const openPriceVal = parseFloat(t.openPrice || '0') / 1e6;
+      if (openPriceVal > 0) {
+        if (t.direction === 1) { // Long -> exits at Bid (Short price)
+          const actualMarketPrice = liveGoldPrice * (1 - spreadShort / 1000000);
+          unrealizedPnl += sizeVal * (actualMarketPrice - openPriceVal) / openPriceVal;
+        } else { // Short -> exits at Ask (Long price)
+          const actualMarketPrice = liveGoldPrice * (1 + spreadLong / 1000000);
+          unrealizedPnl += sizeVal * (openPriceVal - actualMarketPrice) / openPriceVal;
+        }
+      }
+    });
+
+    const unrealizedPnlPct = lockedCapital > 0 ? (unrealizedPnl / lockedCapital) * 100 : 0;
+
+    // Total Equity = Free Margin + Locked Capital + Unrealized PnL
+    const totalEquity = freeMargin + lockedCapital + unrealizedPnl;
+
+    // Realized PnL & Wins/Losses
+    let realizedPnl = 0;
+    let winsCount = 0;
+    let lossesCount = 0;
+    closedList.forEach(t => {
+      const sizeVal = parseFloat(t.openInterest || '0') / 1e6;
+      const openPriceVal = parseFloat(t.openPrice || '0') / 1e6;
+      const closePriceVal = parseFloat(t.closePrice || '0') / 1e6;
+      if (openPriceVal > 0) {
+        let pnlVal = 0;
+        if (t.direction === 1) { // Long
+          pnlVal = sizeVal * (closePriceVal - openPriceVal) / openPriceVal;
+        } else { // Short
+          pnlVal = sizeVal * (openPriceVal - closePriceVal) / openPriceVal;
+        }
+        realizedPnl += pnlVal;
+        if (pnlVal > 0) winsCount++;
+        if (pnlVal < 0) lossesCount++;
+      }
+    });
+
+    // Total Volume
+    let totalVolume = 0;
+    apiTrades.forEach(t => {
+      const sizeVal = parseFloat(t.openInterest || '0') / 1e6;
+      totalVolume += sizeVal;
+    });
+
+    const winRate = (winsCount + lossesCount) > 0 ? (winsCount / (winsCount + lossesCount)) * 100 : 0;
+
+    return {
+      totalEquity,
+      unrealizedPnl,
+      unrealizedPnlPct,
+      freeMargin,
+      lockedCapital,
+      realizedPnl,
+      totalVolume,
+      winRate,
+      tradesCount: apiTrades.length,
+      closedCount: closedList.length,
+      winsCount,
+      lossesCount,
+      isMock: false
+    };
+  }, [apiTrades, isConnected, address, liveGoldPrice, usdcBalance, spreadLong, spreadShort]);
+
+  useEffect(() => {
+    if (activeTab === 'trade') {
+      setSelectedPair('XAU-USD');
+      localStorage.setItem('brokex_selected_pair', 'XAU-USD');
+      window.dispatchEvent(new Event('brokex_pair_changed'));
+    }
+  }, [activeTab]);
 
   const handleSelectMarket = (symbol) => {
     setSelectedPair(symbol);
@@ -98,9 +349,25 @@ export default function MobileTrade() {
 
   const activeMarketInfo = useMemo(() => {
     const market = marketsData.find(m => m.symbol === selectedPair);
-    if (market) return market;
-    return { symbol: 'XAU-USD', price: '2,315.10', change: '+0.45%', volume: '$452.0M', leverage: '50x', logo: 'XAU', company: 'Gold / US Dollar CFD' };
-  }, [selectedPair]);
+    if (market) {
+      if (market.symbol === 'XAU-USD') {
+        return {
+          ...market,
+          price: liveGoldPrice.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        };
+      }
+      return market;
+    }
+    return { 
+      symbol: 'XAU-USD', 
+      price: liveGoldPrice.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), 
+      change: '+0.45%', 
+      volume: '$452.0M', 
+      leverage: '50x', 
+      logo: 'XAU', 
+      company: 'Gold / US Dollar CFD' 
+    };
+  }, [selectedPair, liveGoldPrice]);
 
   return (
     <MobileLayout disablePadding={true}>
@@ -322,7 +589,6 @@ export default function MobileTrade() {
                   {/* Unified Header & Market Stats Row */}
                   <MobileTopNav 
                     activeMarketInfo={activeMarketInfo} 
-                    setIsMarketSelectorOpen={setIsMarketSelectorOpen} 
                   />
 
                   {/* 3. Chart Container */}
@@ -357,31 +623,34 @@ export default function MobileTrade() {
 
         {/* TAB 2: TRADE VIEW (ORDER PANEL ONLY) */}
         {activeTab === 'trade' && (
-          <div style={{ 
-            flex: 1, 
-            display: 'flex', 
-            flexDirection: 'column', 
-            backgroundColor: 'var(--bg-dark)', 
-            padding: '8px', 
-            width: '100%' 
-          }}>
+          <div 
+            className="no-scrollbar"
+            style={{ 
+              flex: 1, 
+              display: 'flex', 
+              flexDirection: 'column', 
+              backgroundColor: 'var(--bg-dark)', 
+              padding: '8px', 
+              width: '100%',
+              overflowY: 'auto',
+              WebkitOverflowScrolling: 'touch'
+            }}
+          >
             {/* Unified Trade TopNav + Order Panel (One Single Div!) */}
             <div style={{ 
-              flex: 1, 
               display: 'flex', 
               flexDirection: 'column', 
               backgroundColor: 'var(--panel-bg)',
               borderRadius: '8px',
               border: '1px solid var(--border-color)',
               boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
-              overflow: 'hidden'
+              overflow: 'visible'
             }}>
               <MobileTopNav 
                 activeMarketInfo={activeMarketInfo} 
-                setIsMarketSelectorOpen={setIsMarketSelectorOpen} 
               />
               
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', overflow: 'visible' }}>
                 <MobileOrderPanel 
                   isOpen={true} 
                   onClose={() => handleTabChange('markets')} 
@@ -395,25 +664,28 @@ export default function MobileTrade() {
 
         {/* TAB 3: PORTFOLIO VIEW */}
         {activeTab === 'portfolio' && (
-          <div style={{ 
-            flex: 1, 
-            display: 'flex', 
-            flexDirection: 'column', 
-            backgroundColor: 'var(--bg-dark)', 
-            padding: '8px', 
-            width: '100%',
-            overflow: 'hidden'
-          }}>
+          <div 
+            className="no-scrollbar"
+            style={{ 
+              flex: 1, 
+              display: 'flex', 
+              flexDirection: 'column', 
+              backgroundColor: 'var(--bg-dark)', 
+              padding: '8px', 
+              width: '100%',
+              overflowY: 'auto',
+              WebkitOverflowScrolling: 'touch'
+            }}
+          >
             {/* Unified Portfolio Stats + Positions (One Single Div!) */}
             <div style={{ 
-              flex: 1, 
               display: 'flex', 
               flexDirection: 'column', 
               backgroundColor: 'var(--panel-bg)',
               borderRadius: '8px',
               border: '1px solid var(--border-color)',
               boxShadow: '0 4px 12px rgba(0, 0, 0, 0.1)',
-              overflow: 'hidden'
+              overflow: 'visible'
             }}>
               {/* Top Summary Header Section */}
               <div style={{
@@ -428,16 +700,16 @@ export default function MobileTrade() {
                   <span style={{ fontSize: '9px', color: 'var(--text-grey)', textTransform: 'uppercase', fontWeight: 'bold', letterSpacing: '0.05em' }}>
                     Account Summary
                   </span>
-                  <span style={{ fontSize: '8.5px', color: 'var(--gold)', backgroundColor: 'rgba(200, 169, 126, 0.1)', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold' }}>
-                    LIVE ACCOUNT
+                  <span style={{ fontSize: '8.5px', color: isConnected ? 'var(--gold)' : 'var(--text-grey)', backgroundColor: isConnected ? 'rgba(200, 169, 126, 0.1)' : 'rgba(255, 255, 255, 0.03)', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold' }}>
+                    {isConnected ? 'LIVE ACCOUNT' : 'DISCONNECTED'}
                   </span>
                 </div>
 
                 {/* Main Net Worth / Balance Section */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', borderBottom: '1px solid rgba(255, 255, 255, 0.03)', paddingBottom: '12px' }}>
                   <div style={{ display: 'flex', flexDirection: 'column' }}>
-                    <span style={{ fontSize: '18px', fontWeight: 'bold', fontFamily: 'Source Code Pro, monospace', color: 'var(--text-dark)' }}>
-                      $1,965.60
+                    <span style={{ fontSize: '18px', fontWeight: 'bold', fontFamily: 'Source Code Pro, monospace', color: isConnected ? 'var(--text-dark)' : 'var(--text-grey)' }}>
+                      {isConnected ? `$${portfolioStats.totalEquity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
                     </span>
                     <span style={{ fontSize: '9px', color: 'var(--text-grey)', marginTop: '2px' }}>
                       Total Equity (USDC)
@@ -445,11 +717,16 @@ export default function MobileTrade() {
                   </div>
 
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
-                    <span style={{ fontSize: '14px', fontWeight: 'bold', fontFamily: 'Source Code Pro, monospace', color: '#3b82f6' }}>
-                      +$465.60
+                    <span style={{ 
+                      fontSize: '14px', 
+                      fontWeight: 'bold', 
+                      fontFamily: 'Source Code Pro, monospace', 
+                      color: !isConnected ? 'var(--text-grey)' : (portfolioStats.unrealizedPnl >= 0 ? '#3b82f6' : '#ef4444')
+                    }}>
+                      {isConnected ? `${portfolioStats.unrealizedPnl >= 0 ? '+' : '-'}$${Math.abs(portfolioStats.unrealizedPnl).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
                     </span>
                     <span style={{ fontSize: '9px', color: 'var(--text-grey)', marginTop: '2px' }}>
-                      Unrealized PnL (+31.0%)
+                      Unrealized PnL {isConnected ? `(${portfolioStats.unrealizedPnl >= 0 ? '+' : '-'}${Math.abs(portfolioStats.unrealizedPnlPct).toFixed(1)}%)` : ''}
                     </span>
                   </div>
                 </div>
@@ -460,32 +737,41 @@ export default function MobileTrade() {
                   {/* 1. Free Margin */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                     <span style={{ fontSize: '8.5px', color: 'var(--text-grey)', textTransform: 'uppercase', letterSpacing: '0.02em' }}>Free Margin</span>
-                    <span style={{ fontSize: '12px', fontWeight: 'bold', fontFamily: 'Source Code Pro, monospace', color: 'var(--text-dark)' }}>
-                      $1,500.00
+                    <span style={{ fontSize: '12px', fontWeight: 'bold', fontFamily: 'Source Code Pro, monospace', color: isConnected ? 'var(--text-dark)' : 'var(--text-grey)' }}>
+                      {isConnected ? `$${portfolioStats.freeMargin.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
                     </span>
                   </div>
 
                   {/* 2. Realized PNL */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                     <span style={{ fontSize: '8.5px', color: 'var(--text-grey)', textTransform: 'uppercase', letterSpacing: '0.02em' }}>Realized PNL</span>
-                    <span style={{ fontSize: '12px', fontWeight: 'bold', fontFamily: 'Source Code Pro, monospace', color: '#3b82f6' }}>
-                      +$1,799.63
+                    <span style={{ 
+                      fontSize: '12px', 
+                      fontWeight: 'bold', 
+                      fontFamily: 'Source Code Pro, monospace', 
+                      color: !isConnected ? 'var(--text-grey)' : (portfolioStats.realizedPnl >= 0 ? '#3b82f6' : '#ef4444')
+                    }}>
+                      {isConnected ? `${portfolioStats.realizedPnl >= 0 ? '+' : '-'}$${Math.abs(portfolioStats.realizedPnl).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
                     </span>
                   </div>
 
                   {/* 3. Total Volume */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                     <span style={{ fontSize: '8.5px', color: 'var(--text-grey)', textTransform: 'uppercase', letterSpacing: '0.02em' }}>Total Volume</span>
-                    <span style={{ fontSize: '12px', fontWeight: 'bold', fontFamily: 'Source Code Pro, monospace', color: 'var(--text-dark)' }}>
-                      $203,444.31
+                    <span style={{ fontSize: '12px', fontWeight: 'bold', fontFamily: 'Source Code Pro, monospace', color: isConnected ? 'var(--text-dark)' : 'var(--text-grey)' }}>
+                      {isConnected ? `$${portfolioStats.totalVolume.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
                     </span>
                   </div>
 
                   {/* 4. Win Rate */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                    <span style={{ fontSize: '8.5px', color: 'var(--text-grey)', textTransform: 'uppercase', letterSpacing: '0.02em' }}>Win Rate (35 Tr.)</span>
-                    <span style={{ fontSize: '12px', fontWeight: 'bold', fontFamily: 'Source Code Pro, monospace', color: 'var(--gold)' }}>
-                      62.8% <span style={{ fontSize: '9.5px', color: 'var(--text-grey)', fontWeight: 'normal', fontFamily: 'Inter, sans-serif' }}>(22W - 13L)</span>
+                    <span style={{ fontSize: '8.5px', color: 'var(--text-grey)', textTransform: 'uppercase', letterSpacing: '0.02em' }}>
+                      Win Rate {isConnected ? `(${portfolioStats.closedCount} Tr.)` : ''}
+                    </span>
+                    <span style={{ fontSize: '12px', fontWeight: 'bold', fontFamily: 'Source Code Pro, monospace', color: isConnected ? 'var(--gold)' : 'var(--text-grey)' }}>
+                      {isConnected ? (
+                        <>{portfolioStats.winRate.toFixed(1)}% <span style={{ fontSize: '9.5px', color: 'var(--text-grey)', fontWeight: 'normal', fontFamily: 'Inter, sans-serif' }}>({portfolioStats.winsCount}W - {portfolioStats.lossesCount}L)</span></>
+                      ) : '—'}
                     </span>
                   </div>
 
@@ -493,7 +779,7 @@ export default function MobileTrade() {
               </div>
 
               {/* Bottom Positions Section inside same parent */}
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, width: '100%', overflow: 'hidden' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', width: '100%', overflow: 'visible' }}>
                 <MobilePositions 
                   onManagePosition={handleManagePosition} 
                   isFullPage={true} 
