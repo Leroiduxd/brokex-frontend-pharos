@@ -232,14 +232,18 @@ export default function Chart() {
           lastTimeRef.current = lastCandle.time;
           lastCandleRef.current = lastCandle;
         } else {
-          if (!isScrollLoad) {
+          if (!isScrollLoad && !lastCandleRef.current) {
             setError("No candle data returned from API");
+          } else {
+            console.warn("No candle data returned from API, keeping last update.");
           }
         }
       } catch (err) {
         console.error("Error fetching candles:", err);
-        if (!isScrollLoad) {
+        if (!isScrollLoad && !lastCandleRef.current) {
           setError(`Failed to load chart data: ${err.message}`);
+        } else {
+          console.warn("Error fetching candles, keeping last update:", err.message);
         }
       } finally {
         if (isScrollLoad) {
