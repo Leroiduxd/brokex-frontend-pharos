@@ -37,6 +37,10 @@ export const USDC_ADDRESS = isMainnet
   ? (import.meta.env.VITE_MAINNET_USDC_ADDRESS || '0x0000000000000000000000000000000000000000')
   : (import.meta.env.VITE_TESTNET_USDC_ADDRESS || '0xcfc8330f4bcab529c625d12781b1c19466a9fc8b');
 
+export const VAULT_ADDRESS = isMainnet
+  ? (import.meta.env.VITE_MAINNET_VAULT_ADDRESS || '0x589178934112DbBa96C17384079206a21B4F20DA')
+  : (import.meta.env.VITE_TESTNET_VAULT_ADDRESS || '0x0000000000000000000000000000000000000000');
+
 export const CONFIG = {
   rpcUrl: RPC_URL,
   wsUrl: WS_URL,
@@ -48,6 +52,7 @@ export const CONFIG = {
     core: CORE_ADDRESS,
     lens: LENS_ADDRESS,
     usdc: USDC_ADDRESS,
+    vault: VAULT_ADDRESS,
   }
 };
 
