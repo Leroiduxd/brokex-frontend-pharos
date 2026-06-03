@@ -372,12 +372,12 @@ function App() {
                   <line x1="17.5" y1="6.5" x2="17.51" y2="6.5"></line>
                 </svg>
               </a>
-              <a href="#" className="social-link" aria-label="X (Twitter)">
+              <a href="https://x.com/brokexfi" target="_blank" rel="noopener noreferrer" className="social-link" aria-label="X (Twitter)">
                 <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
                   <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
                 </svg>
               </a>
-              <a href="#" className="social-link" aria-label="Telegram">
+              <a href="https://t.me/brokexfi" target="_blank" rel="noopener noreferrer" className="social-link" aria-label="Telegram">
                 <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
                   <path d="M11.944 0C5.344 0 0 5.344 0 12c0 6.656 5.344 12 12 12 6.656 0 12-5.344 12-12C24 5.344 18.656 0 11.944 0zm5.824 8.352l-1.952 9.216c-.144.656-.544.816-1.088.512l-3-2.208-1.44 1.392c-.16.16-.288.288-.592.288l.208-3.008 5.488-4.96c.24-.208-.048-.32-.368-.112l-6.784 4.272-2.912-.912c-.64-.208-.656-.64.128-.944l11.392-4.384c.528-.192.992.128.824.944z"/>
                 </svg>
