@@ -91,7 +91,7 @@ export default function TopNav({ onOpenMarket }) {
 
     const fetchVolume = async () => {
       try {
-        const response = await fetch(`${CONFIG.apiUrl}/stats/volume`);
+        const response = await fetch(`${CONFIG.apiUrl}/stats/volume?network=${CONFIG.network}`);
         if (!isMounted) return;
         if (response.ok) {
           const data = await response.json();
