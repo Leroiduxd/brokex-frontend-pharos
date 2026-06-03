@@ -1,6 +1,6 @@
 // Brokex Smart Contract Configuration (Dynamic Switcher)
 
-const currentNetwork = (typeof window !== 'undefined' && localStorage.getItem('brokex_network')) || 'testnet';
+const currentNetwork = (typeof window !== 'undefined' && localStorage.getItem('brokex_network')) || 'mainnet';
 const isMainnet = currentNetwork === 'mainnet';
 export const NETWORK_NAME = currentNetwork;
 
