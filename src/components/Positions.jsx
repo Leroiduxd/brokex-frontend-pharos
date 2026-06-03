@@ -74,9 +74,9 @@ function mapApiTrade(trade, liveGoldPrice = 2315.00, spreadLong = 0, spreadShort
   const durationSeconds = Math.max(0, closeTime - openTime);
   const durationHours = durationSeconds / 3600;
 
-  // Decimal rate = (borrowRateHourlyRaw / 100) / 100
+  // Decimal rate = borrowRateHourlyRaw / 1,000,000
   const borrowRateDecimal = borrowRateHourlyRaw !== null 
-    ? (Number(borrowRateHourlyRaw) / 100) / 100 
+    ? Number(borrowRateHourlyRaw) / 1000000 
     : 0.0001; // default to 0.01% hourly if not loaded
   
   const accruedBorrowFeeUSD = sizeVal * borrowRateDecimal * durationHours;

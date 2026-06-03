@@ -225,7 +225,7 @@ export default function TopNav({ onOpenMarket }) {
   const totalOi = oiLongUSD + oiShortUSD;
 
   const formattedBorrowRate = borrowRateHourlyRaw !== null 
-    ? `${(Number(borrowRateHourlyRaw) / 100).toFixed(4)}%/h`
+    ? `${(Number(borrowRateHourlyRaw) / 10000).toFixed(4)}%/h`
     : '0.0000%/h';
 
   const formatOIVal = (val) => {
