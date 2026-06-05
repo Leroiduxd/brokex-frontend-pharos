@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
 import Rectangle1 from './components/Rectangle1';
-import Rectangle2 from './components/Rectangle2';
-import Rectangle3 from './components/Rectangle3';
-import Rectangle4 from './components/Rectangle4';
-import Rectangle5 from './components/Rectangle5';
+import Rectangle6 from './components/Rectangle6';
+import Rectangle7 from './components/Rectangle7';
+import Rectangle8 from './components/Rectangle8';
+import Rectangle9 from './components/Rectangle9';
 
 function App() {
   const [goldPrice, setGoldPrice] = useState('4490.00');
@@ -351,10 +351,10 @@ function App() {
             <div className="desktop-only-rect1">
               <Rectangle1 />
             </div>
-            <Rectangle2 />
-            <Rectangle3 />
-            <Rectangle4 />
-            <Rectangle5 />
+            <Rectangle6 />
+            <Rectangle7 />
+            <Rectangle8 />
+            <Rectangle9 />
           </div>
 
           {/* Website Footer */}
