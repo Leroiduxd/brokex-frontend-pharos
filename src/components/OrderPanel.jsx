@@ -579,7 +579,8 @@ export default function OrderPanel() {
                 borderRadius: '4px',
                 backgroundColor: leverage === lev ? goldAccentLight : themeBg,
                 color: leverage === lev ? goldAccent : themeTextMuted,
-                cursor: 'pointer', transition: 'all 0.1s'
+                cursor: 'pointer', transition: 'all 0.1s',
+                fontFamily: 'Source Code Pro, monospace'
               }}
             >
               {lev}x

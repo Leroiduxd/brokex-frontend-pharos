@@ -410,8 +410,20 @@ export default function Chart() {
   };
 
   return (
-    <div ref={chartWrapperRef} className="chart panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%' }}>
-      <div className="chart-toolbar" style={{ display: 'flex', padding: '6px 8px', gap: '8px', alignItems: 'center' }}>
+    <div ref={chartWrapperRef} className="chart panel chart-container-layout" style={{ height: '100%', width: '100%' }}>
+      <style>{`
+        .chart-container-layout {
+          display: flex !important;
+          flex-direction: column !important;
+        }
+        .chart-toolbar-container {
+          display: flex !important;
+          padding: 0px 6px !important;
+          gap: 8px !important;
+          align-items: center !important;
+        }
+      `}</style>
+      <div className="chart-toolbar chart-toolbar-container">
         <div style={{ display: 'flex', gap: '2px' }}>
           {timeframes.map(tf => (
             <button

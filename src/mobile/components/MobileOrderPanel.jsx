@@ -658,7 +658,8 @@ export default function MobileOrderPanel({ isOpen, onClose, initialSide = 'buy',
                   backgroundColor: leverage === lev ? goldAccentLight : 'rgba(255,255,255,0.02)',
                   color: leverage === lev ? goldAccent : 'var(--text-grey)',
                   cursor: 'pointer',
-                  fontWeight: 'bold'
+                  fontWeight: 'bold',
+                  fontFamily: 'Source Code Pro, monospace'
                 }}
               >
                 {lev}x
