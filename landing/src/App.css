@@ -913,7 +913,7 @@
 
 /* Split Layout (Rectangle 6) */
 .rect-split {
-  background-color: #0a0a0a;
+  background-color: #070707;
   border: 1px solid #1a1a1a;
   display: flex;
   flex-direction: row;
@@ -941,17 +941,8 @@
   align-items: flex-start;
   padding: 3rem;
   text-align: left;
-}
-
-.split-left::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: linear-gradient(90deg, rgba(10, 10, 10, 0.8) 0%, rgba(7, 7, 7, 0.3) 60%, #070707 100%);
-  z-index: 1;
+  -webkit-mask-image: linear-gradient(to right, rgba(0, 0, 0, 1) 40%, rgba(0, 0, 0, 0) 100%);
+  mask-image: linear-gradient(to right, rgba(0, 0, 0, 1) 40%, rgba(0, 0, 0, 0) 100%);
 }
 
 .split-content {
@@ -1207,16 +1198,16 @@
   .split-left {
     padding: 2rem 1.75rem;
     min-height: 250px;
-  }
-
-  .split-left::before {
-    background: linear-gradient(180deg, rgba(10, 10, 10, 0.4) 0%, rgba(10, 10, 10, 0.9) 100%);
+    -webkit-mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 1) 40%, rgba(0, 0, 0, 0) 100%);
+    mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 1) 40%, rgba(0, 0, 0, 0) 100%);
   }
 
   .split-right {
     padding: 2rem 1.75rem;
     border-left: none;
-    border-top: 1px solid #1a1a1a;
+    border-top: none;
+    align-items: flex-start !important;
+    text-align: left !important;
   }
 
   .split-right::after {
